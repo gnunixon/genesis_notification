@@ -2,27 +2,31 @@ name: build
 
 on:
   push:
-  pull_request:
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: genesis-notification
+  REPO_ENDPOINT_PUT: http://10.20.0.1:8082
 
 jobs:
   Build:
     runs-on: self-hosted
+    if : ${{ github.actor != 'dependabot[bot]' }}
     strategy:
       fail-fast: true
     steps:
-      - uses: actions/checkout@v3
-      - name: Build Genesis Core
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 30
+      - name: Build Genesis Notification
+        env:
+              PUSH_CFG: ${{ secrets.PUSH_CFG }}
         run: |
           set -eux
 
-          genesis build $(pwd)
+          source ~/.profile
+          genesis build $(pwd) --inventory
 
-          # Temporary upload step is done in the build script
-          VERSION="$(genesis get-version .)"
-          ELEMENT_PATH="/var/lib/repository/genesis_notification"
-
-          rm -fr "${ELEMENT_PATH}/${VERSION}"
-          mkdir -p "${ELEMENT_PATH}/${VERSION}"
-          mv output/genesis-notification.qcow2 "${ELEMENT_PATH}/${VERSION}/"
-          cd ${ELEMENT_PATH}/${VERSION}/ && \
-            sha256sum genesis-notification.qcow2 >> ${ELEMENT_PATH}/${VERSION}/SHA256SUMS
+          # Decode and write the push configuration
+          echo "$PUSH_CFG" | base64 -d > genesis/genesis.push.yaml
+          genesis push -c genesis/genesis.push.yaml -t local -f --latest

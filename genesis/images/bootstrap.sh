@@ -1,4 +1,6 @@
-#    Copyright 2025 Genesis Corporation.
+#!/usr/bin/env bash
+
+#    Copyright 2026 Genesis developers.
 #
 #    All Rights Reserved.
 #
@@ -14,7 +16,6 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import setuptools
-
-
-setuptools.setup(setup_requires=["pbr"], pbr=True, include_package_data=True)
+set -eu
+set -x
+set -o pipefail
