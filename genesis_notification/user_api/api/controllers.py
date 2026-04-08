@@ -84,7 +84,7 @@ class InstallationController(ra_controllers.BaseResourceController):
     def create(self, **kwargs):
         installation_id = kwargs.get("installation_id")
 
-        existing = models.Installation.objects.get_one(
+        existing = models.Installation.objects.get_one_or_none(
             filters={
                 "installation_id": installation_id,
             }
