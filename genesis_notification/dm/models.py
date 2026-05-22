@@ -413,10 +413,17 @@ class SimpleSmtpProtocol(types_dynamic.AbstractKindModel):
         required=True,
     )
 
+    @staticmethod
+    def _resolve_recipient(content, user_context):
+        recipient = getattr(content, "recipient", None)
+        if recipient:
+            return recipient
+        return user_context["user"]["email"]
+
     def _build_message(self, content, user_context):
         msg = multipart.MIMEMultipart("alternative")
         msg["From"] = self.noreply_email_address
-        msg["To"] = user_context["user"]["email"]
+        msg["To"] = self._resolve_recipient(content, user_context)
         msg["Subject"] = content.title
         for body in content.bodies:
             msg.attach(text.MIMEText(body, "html", "utf-8"))
@@ -431,7 +438,7 @@ class SimpleSmtpProtocol(types_dynamic.AbstractKindModel):
             smtp = self._authenticate(smtp)
             return smtp.sendmail(
                 from_addr=self.noreply_email_address,
-                to_addrs=user_context["user"]["email"],
+                to_addrs=self._resolve_recipient(content, user_context),
                 msg=msg.as_string(),
             )
 
@@ -545,6 +552,10 @@ class AbstractContent(types_dynamic.AbstractKindModel):
 class RenderedEmailContent(AbstractContent):
     KIND = "rendered_email"
 
+    recipient = properties.property(
+        types.AllowNone(types.Email()),
+        default=None,
+    )
     title = properties.property(
         types.String(max_length=256),
         default="",
@@ -558,8 +569,18 @@ class RenderedEmailContent(AbstractContent):
 class EmailContent(RenderedEmailContent):
     KIND = "email"
 
+    recipient = properties.property(
+        types.AllowNone(types.String(max_length=512)),
+        default="{{ user.email }}",
+    )
+
     def render(self, params):
+        rendered_recipient = (
+            jinja2.Template(self.recipient).render(**params)
+            if self.recipient else None
+        )
         return RenderedEmailContent(
+            recipient=rendered_recipient,
             title=jinja2.Template(self.title).render(**params),
             bodies=[jinja2.Template(body).render(**params) for body in self.bodies],
         )
