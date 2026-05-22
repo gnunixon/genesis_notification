@@ -22,6 +22,7 @@ GLOBAL_SERVICE_NAME = "genesis_notification"
 
 class AlwaysActiveStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
+    INACTIVE = "INACTIVE"
 
 
 class EventStatus(str, enum.Enum):

@@ -65,46 +65,126 @@ class ModelWithAlwaysActiveStatus(models.Model):
     )
 
 
-class Installation(
+class UserDevice(
     models.ModelWithUUID,
+    models.ModelWithProject,
     ModelWithAlwaysActiveStatus,
     models.ModelWithTimestamp,
     orm.SQLStorableMixin,
 ):
-    __tablename__ = "installations"
+    __tablename__ = "user_devices"
 
-    installation_id = properties.property(
-        types.String(min_length=8, max_length=128),
-        required=True,
-    )
-
-    user_id = properties.property(
+    user_uuid = properties.property(
         types.UUID(),
         required=True,
     )
 
-    push_token = properties.property(
+    app_id = properties.property(
+        types.String(min_length=1, max_length=128),
+        required=True,
+    )
+
+    provider_id = properties.property(
+        types.UUID(),
+        required=True,
+    )
+
+    fcm_token = properties.property(
         types.String(min_length=16, max_length=512),
         required=True,
     )
 
     platform = properties.property(
-        types.Enum(["ios", "android", "web"]),
+        types.Enum(["android", "ios"]),
         required=True,
     )
 
     app_version = properties.property(
-        types.String(max_length=16),
-        required=True,
+        types.String(max_length=64),
+        default="",
     )
 
     os_version = properties.property(
-        types.String(max_length=16),
-        required=True,
+        types.String(max_length=64),
+        default="",
     )
 
     device_model = properties.property(
-        types.String(max_length=16),
+        types.String(max_length=128),
+        default="",
+    )
+
+
+class UserNotificationRoute(
+    models.ModelWithUUID,
+    models.ModelWithProject,
+    ModelWithAlwaysActiveStatus,
+    orm.SQLStorableMixin,
+):
+    __tablename__ = "user_notification_routes"
+
+    user_uuid = properties.property(
+        types.UUID(),
+        required=True,
+    )
+
+    event_type_uuid = properties.property(
+        types.UUID(),
+        required=True,
+    )
+
+    app_id = properties.property(
+        types.String(min_length=1, max_length=128),
+        required=True,
+    )
+
+    provider_id = properties.property(
+        types.UUID(),
+        required=True,
+    )
+
+
+class AppProviderMapping(
+    models.ModelWithUUID,
+    models.ModelWithProject,
+    ModelWithAlwaysActiveStatus,
+    models.ModelWithTimestamp,
+    orm.SQLStorableMixin,
+):
+    __tablename__ = "app_provider_mappings"
+
+    app_id = properties.property(
+        types.String(min_length=1, max_length=128),
+        required=True,
+    )
+
+    provider_id = properties.property(
+        types.UUID(),
+        required=True,
+    )
+
+
+class EventTypeNotificationTarget(
+    models.ModelWithUUID,
+    models.ModelWithProject,
+    ModelWithAlwaysActiveStatus,
+    models.ModelWithTimestamp,
+    orm.SQLStorableMixin,
+):
+    __tablename__ = "event_type_notification_targets"
+
+    event_type_uuid = properties.property(
+        types.UUID(),
+        required=True,
+    )
+
+    app_id = properties.property(
+        types.String(min_length=1, max_length=128),
+        required=True,
+    )
+
+    provider_id = properties.property(
+        types.UUID(),
         required=True,
     )
 
@@ -125,7 +205,7 @@ FCM_RETRYABLE_ERRORS = {
 @dataclass
 class PushDeliveryResult:
 
-    installation_id: str
+    user_device_uuid: str
     token: str
 
     status: PushDeliveryStatus
@@ -206,14 +286,14 @@ class FCMProtocol(types_dynamic.AbstractKindModel):
 
         return PushDeliveryStatus.RETRYABLE_FAILURE
 
-    def _send_batch(self, installations, content):
+    def _send_batch(self, user_devices, content):
 
         app = self._get_firebase_app()
 
-        tokens = [i.push_token for i in installations]
-        installation_map = {
-            i.push_token: i.installation_id
-            for i in installations
+        tokens = [i.fcm_token for i in user_devices]
+        device_map = {
+            i.fcm_token: i.uuid
+            for i in user_devices
         }
 
         results = []
@@ -237,13 +317,13 @@ class FCMProtocol(types_dynamic.AbstractKindModel):
             for idx, resp in enumerate(response.responses):
 
                 token = chunk[idx]
-                installation_id = installation_map[token]
+                user_device_uuid = device_map[token]
 
                 if resp.success:
 
                     results.append(
                         PushDeliveryResult(
-                            installation_id=installation_id,
+                            user_device_uuid=user_device_uuid,
                             token=token,
                             status=PushDeliveryStatus.SUCCESS,
                             provider_response={"message_id": resp.message_id},
@@ -255,7 +335,7 @@ class FCMProtocol(types_dynamic.AbstractKindModel):
 
                     results.append(
                         PushDeliveryResult(
-                            installation_id=installation_id,
+                            user_device_uuid=user_device_uuid,
                             token=token,
                             status=status,
                             error_code=type(resp.exception).__name__,
@@ -282,29 +362,34 @@ class FCMProtocol(types_dynamic.AbstractKindModel):
 
         for r in batch_result.permanent_failures():
 
-            inst = Installation.objects.get_one(
-                filters={"installation_id": r.installation_id}
+            device = UserDevice.objects.get_one(
+                filters={"uuid": r.user_device_uuid}
             )
 
-            if inst:
-                inst.status = c.AlwaysActiveStatus.INACTIVE.value
-                inst.save()
+            if device:
+                device.status = c.AlwaysActiveStatus.INACTIVE.value
+                device.save()
 
-    def send(self, content, user_context):
+    def send(self, content, user_context, routing_context=None):
 
-        user_id = user_context["user"]["uuid"]
+        if not routing_context:
+            raise RuntimeError("Push routing context is required")
 
-        installations = Installation.objects.get_all(
+        provider_id = routing_context["provider_id"]
+        user_devices = UserDevice.objects.get_all(
             filters={
-                "user_id": filters.EQ(user_id),
+                "project_id": filters.EQ(routing_context["project_id"]),
+                "user_uuid": filters.EQ(routing_context["user_uuid"]),
+                "app_id": filters.EQ(routing_context["app_id"]),
+                "provider_id": filters.EQ(provider_id),
                 "status": filters.EQ(c.AlwaysActiveStatus.ACTIVE.value),
             }
         )
 
-        if not installations:
+        if not user_devices:
             return
 
-        batch_result = self._send_batch(installations, content)
+        batch_result = self._send_batch(user_devices, content)
 
         self._process_batch_result(batch_result)
 
@@ -340,7 +425,7 @@ class SimpleSmtpProtocol(types_dynamic.AbstractKindModel):
     def _authenticate(self, smtp):
         return smtp
 
-    def send(self, content, user_context):
+    def send(self, content, user_context, routing_context=None):
         msg = self._build_message(content, user_context)
         with smtplib.SMTP(self.host, self.port) as smtp:
             smtp = self._authenticate(smtp)
@@ -387,7 +472,7 @@ class ZulipProtocol(types_dynamic.AbstractKindModel):
         required=True,
     )
 
-    def send(self, content, user_context):
+    def send(self, content, user_context, routing_context=None):
         client = zulip.Client(
             site=self.endpoint,
             email=self.email_address,
@@ -433,10 +518,11 @@ class Provider(
         required=True,
     )
 
-    def send(self, content, user_context):
+    def send(self, content, user_context, routing_context=None):
         return self.protocol.send(
             content=content,
             user_context=user_context,
+            routing_context=routing_context,
         )
 
 
@@ -729,6 +815,11 @@ class Event(
 ):
     __tablename__ = "events"
 
+    app_id = properties.property(
+        types.String(min_length=1, max_length=128),
+        required=True,
+    )
+
     exchange = properties.property(
         types_dynamic.KindModelSelectorType(
             types_dynamic.KindModelType(UserExchange),
@@ -768,6 +859,9 @@ class Event(
                 RenderedEvent(
                     content=rendered_content,
                     event_id=self.uuid,
+                    project_id=self.project_id,
+                    app_id=self.app_id,
+                    event_type_uuid=self.event_type.uuid,
                     provider=template.provider,
                     user_context=context,
                     status=StatusMixin.STATUS.IN_PROGRESS.value,
@@ -779,6 +873,7 @@ class Event(
 
 class RenderedEvent(
     models.ModelWithUUID,
+    models.ModelWithProject,
     models.ModelWithTimestamp,
     StatusMixin,
     orm.SQLStorableMixin,
@@ -798,6 +893,14 @@ class RenderedEvent(
         types.UUID(),
         required=True,
     )
+    app_id = properties.property(
+        types.String(min_length=1, max_length=128),
+        required=True,
+    )
+    event_type_uuid = properties.property(
+        types.UUID(),
+        required=True,
+    )
     provider = relationships.relationship(
         Provider,
         required=True,
@@ -808,12 +911,93 @@ class RenderedEvent(
         required=True,
     )
 
+    def _get_push_user_uuid(self):
+        return self.user_context["user"]["uuid"]
+
+    def _resolve_push_route(self):
+        return UserNotificationRoute.objects.get_one_or_none(
+            filters={
+                "project_id": self.project_id,
+                "user_uuid": self._get_push_user_uuid(),
+                "event_type_uuid": self.event_type_uuid,
+                "app_id": self.app_id,
+                "status": c.AlwaysActiveStatus.ACTIVE.value,
+            }
+        )
+
+    def _get_active_provider(self, provider_id):
+        return Provider.objects.get_one_or_none(
+            filters={
+                "uuid": provider_id,
+                "status": c.AlwaysActiveStatus.ACTIVE.value,
+            }
+        )
+
+    def _validate_push_route(self, route):
+        provider = self._get_active_provider(route.provider_id)
+        if not provider:
+            raise RuntimeError("Push route provider is inactive")
+        if provider.protocol.KIND != FCMProtocol.KIND:
+            raise RuntimeError("Push route provider must use FCM protocol")
+
+        mapping = AppProviderMapping.objects.get_one_or_none(
+            filters={
+                "project_id": self.project_id,
+                "app_id": self.app_id,
+                "provider_id": route.provider_id,
+                "status": c.AlwaysActiveStatus.ACTIVE.value,
+            }
+        )
+        if not mapping:
+            raise RuntimeError("Push route provider is not allowed for app_id")
+
+        target = EventTypeNotificationTarget.objects.get_one_or_none(
+            filters={
+                "project_id": self.project_id,
+                "event_type_uuid": self.event_type_uuid,
+                "app_id": self.app_id,
+                "provider_id": route.provider_id,
+                "status": c.AlwaysActiveStatus.ACTIVE.value,
+            }
+        )
+        if not target:
+            raise RuntimeError("Push route provider is not allowed for event type")
+
+        return provider
+
+    def _send_push(self):
+        route = self._resolve_push_route()
+        if not route:
+            LOG.info(
+                "No active push route for event %s, user %s, event type %s",
+                self.event_id,
+                self._get_push_user_uuid(),
+                self.event_type_uuid,
+            )
+            return
+
+        provider = self._validate_push_route(route)
+        return provider.send(
+            content=self.content,
+            user_context=self.user_context,
+            routing_context={
+                "project_id": str(self.project_id),
+                "user_uuid": self._get_push_user_uuid(),
+                "event_type_uuid": str(self.event_type_uuid),
+                "app_id": self.app_id,
+                "provider_id": route.provider_id,
+            },
+        )
+
     def send(self):
         try:
-            self.provider.send(
-                content=self.content,
-                user_context=self.user_context,
-            )
+            if self.content.KIND == RenderedPushContent.KIND:
+                self._send_push()
+            else:
+                self.provider.send(
+                    content=self.content,
+                    user_context=self.user_context,
+                )
         except Exception as e:
             LOG.exception("Failed to send event")
             self.set_error_status(e)
